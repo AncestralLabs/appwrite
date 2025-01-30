@@ -3,26 +3,26 @@ kind: ServiceAccount
 metadata:
   name: appwrite-sa
 ---
-apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
+apiVersion: security.openshift.io/v1
+kind: SecurityContextConstraints
 metadata:
-  name: appwrite-role
-rules:
-  - apiGroups: [""]
-    resources: ["pods", "services", "endpoints", "persistentvolumeclaims"]
-    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: appwrite-role-binding
-subjects:
-  - kind: ServiceAccount
-    name: appwrite-sa
-roleRef:
-  kind: Role
-  name: appwrite-role
-  apiGroup: rbac.authorization.k8s.io
+  name: appwrite-scc
+allowHostDirVolumePlugin: true
+allowHostIPC: true
+allowHostNetwork: true
+allowHostPID: true
+allowHostPorts: true
+allowPrivilegedContainer: true
+allowedCapabilities:
+  - '*'
+runAsUser:
+  type: RunAsAny
+seLinuxContext:
+  type: RunAsAny
+fsGroup:
+  type: RunAsAny
+users:
+  - system:serviceaccount:default:appwrite-sa
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -44,16 +44,10 @@ spec:
           image: docker:dind
           securityContext:
             privileged: true
-            runAsUser: 0
+          args: ["--tls=false"]
           volumeMounts:
-            - name: dind-storage
+            - name: dind-socket
               mountPath: /var/run
-          env:
-            - name: DOCKER_TLS_CERTDIR
-              value: ""
-      volumes:
-        - name: dind-storage
-          emptyDir: {}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -70,15 +64,30 @@ spec:
         app: appwrite-main
     spec:
       serviceAccountName: appwrite-sa
+      initContainers:
+        - name: wait-for-dind
+          image: busybox
+          command: ['sh', '-c', 'until nc -z appwrite-dind 2375; do echo waiting for dind; sleep 2; done;']
       containers:
+        - name: traefik
+          image: traefik:2.11
+          ports:
+            - containerPort: 8080
+              name: http
+            - containerPort: 8443
+              name: https
+          volumeMounts:
+            - name: dind-socket
+              mountPath: /var/run/docker.sock
         - name: appwrite
           image: appwrite/appwrite:latest
           envFrom:
             - configMapRef:
                 name: appwrite-config
+          ports:
+            - containerPort: 9501
+              name: appwrite
           volumeMounts:
-            - name: dind-socket
-              mountPath: /var/run/docker.sock
             - name: appwrite-storage
               mountPath: /storage
       volumes:
@@ -88,50 +97,6 @@ spec:
           persistentVolumeClaim:
             claimName: appwrite-pvc
 ---
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: appwrite-executor
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: appwrite-executor
-  template:
-    metadata:
-      labels:
-        app: appwrite-executor
-    spec:
-      serviceAccountName: appwrite-sa
-      containers:
-        - name: executor
-          image: openruntimes/executor:0.6.11
-          securityContext:
-            capabilities:
-              add: ["SYS_ADMIN"]
-          volumeMounts:
-            - name: dind-socket
-              mountPath: /var/run/docker.sock
-            - name: appwrite-builds
-              mountPath: /storage/builds
-      volumes:
-        - name: dind-socket
-          emptyDir: {}
-        - name: appwrite-builds
-          persistentVolumeClaim:
-            claimName: appwrite-pvc
----
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: appwrite-pvc
-spec:
-  accessModes:
-    - ReadWriteOnce
-  resources:
-    requests:
-      storage: 20Gi
----
 apiVersion: v1
 kind: Service
 metadata:
@@ -139,22 +104,32 @@ metadata:
 spec:
   ports:
     - name: http
-      port: 80
-      targetPort: 80
+      port: 8080
+      targetPort: 8080
     - name: https
-      port: 443
-      targetPort: 443
+      port: 8443
+      targetPort: 8443
   selector:
     app: appwrite-main
-  type: ClusterIP
 ---
 apiVersion: route.openshift.io/v1
 kind: Route
 metadata:
-  name: appwrite-route
+  name: appwrite-http
 spec:
   port:
     targetPort: http
+  to:
+    kind: Service
+    name: appwrite-service
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: appwrite-https
+spec:
+  port:
+    targetPort: https
   to:
     kind: Service
     name: appwrite-service
