@@ -1,0 +1,163 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: appwrite-sa
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: appwrite-role
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "services", "endpoints", "persistentvolumeclaims"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: appwrite-role-binding
+subjects:
+  - kind: ServiceAccount
+    name: appwrite-sa
+roleRef:
+  kind: Role
+  name: appwrite-role
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: appwrite-dind
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: appwrite-dind
+  template:
+    metadata:
+      labels:
+        app: appwrite-dind
+    spec:
+      serviceAccountName: appwrite-sa
+      containers:
+        - name: dind
+          image: docker:dind
+          securityContext:
+            privileged: true
+            runAsUser: 0
+          volumeMounts:
+            - name: dind-storage
+              mountPath: /var/run
+          env:
+            - name: DOCKER_TLS_CERTDIR
+              value: ""
+      volumes:
+        - name: dind-storage
+          emptyDir: {}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: appwrite-main
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: appwrite-main
+  template:
+    metadata:
+      labels:
+        app: appwrite-main
+    spec:
+      serviceAccountName: appwrite-sa
+      containers:
+        - name: appwrite
+          image: appwrite/appwrite:latest
+          envFrom:
+            - configMapRef:
+                name: appwrite-config
+          volumeMounts:
+            - name: dind-socket
+              mountPath: /var/run/docker.sock
+            - name: appwrite-storage
+              mountPath: /storage
+      volumes:
+        - name: dind-socket
+          emptyDir: {}
+        - name: appwrite-storage
+          persistentVolumeClaim:
+            claimName: appwrite-pvc
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: appwrite-executor
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: appwrite-executor
+  template:
+    metadata:
+      labels:
+        app: appwrite-executor
+    spec:
+      serviceAccountName: appwrite-sa
+      containers:
+        - name: executor
+          image: openruntimes/executor:0.6.11
+          securityContext:
+            capabilities:
+              add: ["SYS_ADMIN"]
+          volumeMounts:
+            - name: dind-socket
+              mountPath: /var/run/docker.sock
+            - name: appwrite-builds
+              mountPath: /storage/builds
+      volumes:
+        - name: dind-socket
+          emptyDir: {}
+        - name: appwrite-builds
+          persistentVolumeClaim:
+            claimName: appwrite-pvc
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: appwrite-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 20Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: appwrite-service
+spec:
+  ports:
+    - name: http
+      port: 80
+      targetPort: 80
+    - name: https
+      port: 443
+      targetPort: 443
+  selector:
+    app: appwrite-main
+  type: ClusterIP
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: appwrite-route
+spec:
+  port:
+    targetPort: http
+  to:
+    kind: Service
+    name: appwrite-service
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
