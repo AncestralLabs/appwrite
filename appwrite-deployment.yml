@@ -1,29 +1,119 @@
+---
+# Configuración de Seguridad
 apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: appwrite-sa
+
 ---
 apiVersion: security.openshift.io/v1
 kind: SecurityContextConstraints
 metadata:
   name: appwrite-scc
 allowHostDirVolumePlugin: true
-allowHostIPC: true
-allowHostNetwork: true
-allowHostPID: true
-allowHostPorts: true
 allowPrivilegedContainer: true
-allowedCapabilities:
-  - '*'
 runAsUser:
   type: RunAsAny
 seLinuxContext:
   type: RunAsAny
-fsGroup:
-  type: RunAsAny
 users:
   - system:serviceaccount:default:appwrite-sa
+
 ---
+# Base de Datos MariaDB
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: appwrite-mariadb
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: appwrite-mariadb
+  template:
+    metadata:
+      labels:
+        app: appwrite-mariadb
+    spec:
+      serviceAccountName: appwrite-sa
+      containers:
+        - name: mariadb
+          image: mariadb:10.11
+          env:
+            - name: MYSQL_ROOT_PASSWORD
+              value: rootpassword
+            - name: MYSQL_DATABASE
+              value: appwrite
+            - name: MYSQL_USER
+              value: appwrite
+            - name: MYSQL_PASSWORD
+              value: appwrite
+          ports:
+            - containerPort: 3306
+          volumeMounts:
+            - name: mariadb-data
+              mountPath: /var/lib/mysql
+      volumes:
+        - name: mariadb-data
+          persistentVolumeClaim:
+            claimName: mariadb-pvc
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mariadb-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+
+---
+# Redis
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: appwrite-redis
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: appwrite-redis
+  template:
+    metadata:
+      labels:
+        app: appwrite-redis
+    spec:
+      serviceAccountName: appwrite-sa
+      containers:
+        - name: redis
+          image: redis:7.2.4-alpine
+          ports:
+            - containerPort: 6379
+          volumeMounts:
+            - name: redis-data
+              mountPath: /data
+      volumes:
+        - name: redis-data
+          persistentVolumeClaim:
+            claimName: redis-pvc
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: redis-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 2Gi
+
+---
+# Docker-in-Docker (DinD)
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -48,7 +138,12 @@ spec:
           volumeMounts:
             - name: dind-socket
               mountPath: /var/run
+      volumes:
+        - name: dind-socket
+          emptyDir: {}
+
 ---
+# Appwrite Core
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -65,9 +160,9 @@ spec:
     spec:
       serviceAccountName: appwrite-sa
       initContainers:
-        - name: wait-for-dind
+        - name: wait-for-dependencies
           image: busybox
-          command: ['sh', '-c', 'until nc -z appwrite-dind 2375; do echo waiting for dind; sleep 2; done;']
+          command: ['sh', '-c', 'until nc -z appwrite-mariadb 3306 && nc -z appwrite-redis 6379; do echo "Waiting for dependencies..."; sleep 2; done;']
       containers:
         - name: traefik
           image: traefik:2.11
@@ -81,22 +176,113 @@ spec:
               mountPath: /var/run/docker.sock
         - name: appwrite
           image: appwrite/appwrite:latest
-          envFrom:
-            - configMapRef:
-                name: appwrite-config
+          env:
+            - name: _APP_ENV
+              value: development
+            - name: _APP_DB_HOST
+              value: appwrite-mariadb
+            - name: _APP_DB_PORT
+              value: "3306"
+            - name: _APP_DB_USER
+              value: appwrite
+            - name: _APP_DB_PASS
+              value: appwrite
+            - name: _APP_REDIS_HOST
+              value: appwrite-redis
+            - name: _APP_REDIS_PORT
+              value: "6379"
           ports:
-            - containerPort: 9501
-              name: appwrite
+            - containerPort: 80
           volumeMounts:
             - name: appwrite-storage
               mountPath: /storage
+            - name: dind-socket
+              mountPath: /var/run/docker.sock
       volumes:
         - name: dind-socket
           emptyDir: {}
         - name: appwrite-storage
           persistentVolumeClaim:
             claimName: appwrite-pvc
+
 ---
+# Volumen para Appwrite
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: appwrite-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+
+---
+# Workers
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: appwrite-workers
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: appwrite-workers
+  template:
+    metadata:
+      labels:
+        app: appwrite-workers
+    spec:
+      serviceAccountName: appwrite-sa
+      containers:
+        - name: worker-audits
+          image: appwrite/appwrite:latest
+          command: ["worker-audits"]
+          envFrom:
+            - configMapRef:
+                name: appwrite-env
+
+        - name: worker-webhooks
+          image: appwrite/appwrite:latest
+          command: ["worker-webhooks"]
+          envFrom:
+            - configMapRef:
+                name: appwrite-env
+
+      # Agregar más workers según necesidad
+
+---
+# OpenRuntimes
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: appwrite-openruntimes
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: appwrite-openruntimes
+  template:
+    metadata:
+      labels:
+        app: appwrite-openruntimes
+    spec:
+      serviceAccountName: appwrite-sa
+      containers:
+        - name: executor
+          image: openruntimes/executor:0.6.11
+          volumeMounts:
+            - name: dind-socket
+              mountPath: /var/run/docker.sock
+        - name: proxy
+          image: openruntimes/proxy:0.5.5
+      volumes:
+        - name: dind-socket
+          emptyDir: {}
+
+---
+# Servicios
 apiVersion: v1
 kind: Service
 metadata:
@@ -111,7 +297,9 @@ spec:
       targetPort: 8443
   selector:
     app: appwrite-main
+
 ---
+# Configuración de Rutas
 apiVersion: route.openshift.io/v1
 kind: Route
 metadata:
@@ -122,6 +310,7 @@ spec:
   to:
     kind: Service
     name: appwrite-service
+
 ---
 apiVersion: route.openshift.io/v1
 kind: Route
@@ -136,3 +325,18 @@ spec:
   tls:
     termination: edge
     insecureEdgeTerminationPolicy: Redirect
+
+---
+# ConfigMap para variables compartidas
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: appwrite-env
+data:
+  _APP_ENV: "development"
+  _APP_DB_HOST: "appwrite-mariadb"
+  _APP_DB_PORT: "3306"
+  _APP_DB_USER: "appwrite"
+  _APP_DB_PASS: "appwrite"
+  _APP_REDIS_HOST: "appwrite-redis"
+  _APP_REDIS_PORT: "6379"
