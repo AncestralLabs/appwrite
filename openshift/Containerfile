@@ -1,0 +1,23 @@
+FROM registry.access.redhat.com/ubi8:latest
+
+# Instalar Podman y Podman Compose
+RUN yum install -y podman python3-pip && \
+    pip3 install podman-compose && \
+    yum clean all
+
+# Crear usuario no root
+RUN mkdir -p /workspace && \
+    useradd -u 1001 -r -g 0 -M -d /workspace -s /sbin/nologin -c "Default OpenShift User" default && \
+    chmod -R g=u /workspace
+
+# Script para levantar automáticamente el archivo compose.yml
+COPY entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
+
+USER 1001
+WORKDIR /workspace
+
+# TODO Levantar automaticamente el archivo compose.yml
+
+# Usar el script como comando por defecto
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
