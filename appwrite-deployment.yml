@@ -4,6 +4,7 @@ apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: appwrite-sa
+  namespace: appwrite
   annotations:
     serviceaccount.openshift.io/automount-service-account-token: "true"
 
@@ -12,6 +13,7 @@ apiVersion: security.openshift.io/v1
 kind: SecurityContextConstraints
 metadata:
   name: appwrite-scc
+  #namespace: appwrite
 allowHostDirVolumePlugin: true
 allowPrivilegedContainer: true
 runAsUser:
@@ -26,6 +28,7 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
   name: appwrite-scc-role
+  #namespace: appwrite
 rules:
   - apiGroups: ["security.openshift.io"]
     resources: ["securitycontextconstraints"]
@@ -37,6 +40,7 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
   name: appwrite-scc-binding
+  #namespace: appwrite
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
@@ -52,6 +56,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: appwrite-mariadb
+  namespace: appwrite
 spec:
   replicas: 1
   selector:
@@ -90,6 +95,7 @@ apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: mariadb-pvc
+  namespace: appwrite
 spec:
   accessModes:
     - ReadWriteOnce
@@ -103,6 +109,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: appwrite-redis
+  namespace: appwrite
 spec:
   replicas: 1
   selector:
@@ -132,6 +139,7 @@ apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: redis-pvc
+  namespace: appwrite
 spec:
   accessModes:
     - ReadWriteOnce
@@ -145,6 +153,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: appwrite-dind
+  namespace: appwrite
 spec:
   replicas: 1
   selector:
@@ -170,6 +179,15 @@ spec:
           volumeMounts:
             - name: dind-socket
               mountPath: /var/run
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: kubernetes.io/hostname
+                    operator: In
+                    values:
+                      - 70-85-c2-d5-f0-c0 # Mismo nodo que el PV
       volumes:
         - name: dind-socket
           persistentVolumeClaim:
@@ -177,12 +195,45 @@ spec:
 
 ---
 apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: dind-socket-pv
+  #namespace: appwrite
+spec:
+  capacity:
+    storage: 1Gi
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: local-storage
+  local:
+    path: /mnt/local-storage/appwrite/docker # Ruta en el nodo
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: kubernetes.io/hostname
+              operator: In
+              values:
+                - 70-85-c2-d5-f0-c0 # Especifica el nodo donde está el directorio
+
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: local-storage
+  #namespace: appwrite
+provisioner: kubernetes.io/no-provisioner
+volumeBindingMode: WaitForFirstConsumer
+
+---
+apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: dind-socket-pvc
+  namespace: appwrite
 spec:
   accessModes:
-    - ReadWriteMany  # Importante!
+    - ReadWriteOnce  # TODO ReadWriteMany Importante!
   storageClassName: local-storage
   resources:
     requests:
@@ -194,6 +245,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: appwrite-main
+  namespace: appwrite
 spec:
   replicas: 1
   selector:
@@ -231,23 +283,9 @@ spec:
               value: "true"
         - name: appwrite
           image: appwrite/appwrite:1.6.0
-          env:
-            - name: _APP_ENV
-              value: development
-            - name: _APP_DB_HOST
-              value: appwrite-mariadb
-            - name: _APP_DB_PORT
-              value: "3306"
-            - name: _APP_DB_USER
-              value: appwrite
-            - name: _APP_DB_PASS
-              value: appwrite
-            - name: _APP_REDIS_HOST
-              value: appwrite-redis
-            - name: _APP_REDIS_PORT
-              value: "6379"
-            - name: _APP_CONSOLE_PORT
-              value: "9501"
+          envFrom:  # Usar el ConfigMap
+            - configMapRef:
+                name: appwrite-env
           ports:
             - containerPort: 9501
           volumeMounts:
@@ -255,6 +293,15 @@ spec:
               mountPath: /storage
             - name: dind-socket
               mountPath: /var/run/docker.sock
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: kubernetes.io/hostname
+                    operator: In
+                    values:
+                      - 70-85-c2-d5-f0-c0 # Mismo nodo que el PV
       volumes:
         - name: dind-socket
           persistentVolumeClaim:
@@ -269,6 +316,7 @@ apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: appwrite-pvc
+  namespace: appwrite
 spec:
   accessModes:
     - ReadWriteOnce
@@ -281,6 +329,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: appwrite-admin-service
+  namespace: appwrite
 spec:
   ports:
     - name: admin
@@ -295,6 +344,7 @@ apiVersion: route.openshift.io/v1
 kind: Route
 metadata:
   name: appwrite-admin
+  namespace: appwrite
 spec:
   port:
     targetPort: admin
@@ -308,6 +358,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: appwrite-workers
+  namespace: appwrite
 spec:
   replicas: 1
   selector:
@@ -342,6 +393,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: appwrite-openruntimes
+  namespace: appwrite
 spec:
   replicas: 1
   selector:
@@ -366,6 +418,15 @@ spec:
               name: runtime-http
             - containerPort: 3001
               name: runtime-https
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: kubernetes.io/hostname
+                    operator: In
+                    values:
+                      - 70-85-c2-d5-f0-c0 # Mismo nodo que el PV
       volumes:
         - name: dind-socket
           persistentVolumeClaim:
@@ -377,6 +438,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: appwrite-service
+  namespace: appwrite
 spec:
   ports:
     - name: http
@@ -393,6 +455,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: openruntimes-service
+  namespace: appwrite
 spec:
   ports:
     - name: runtime-http
@@ -410,6 +473,7 @@ apiVersion: route.openshift.io/v1
 kind: Route
 metadata:
   name: appwrite-http
+  namespace: appwrite
 spec:
   port:
     targetPort: http
@@ -422,6 +486,7 @@ apiVersion: route.openshift.io/v1
 kind: Route
 metadata:
   name: appwrite-https
+  namespace: appwrite
 spec:
   port:
     targetPort: https
@@ -437,6 +502,7 @@ apiVersion: route.openshift.io/v1
 kind: Route
 metadata:
   name: openruntimes-http
+  namespace: appwrite
 spec:
   port:
     targetPort: runtime-http
@@ -449,6 +515,7 @@ apiVersion: route.openshift.io/v1
 kind: Route
 metadata:
   name: openruntimes-https
+  namespace: appwrite
 spec:
   port:
     targetPort: runtime-https
@@ -464,6 +531,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: appwrite-env
+  namespace: appwrite
 data:
   _APP_ENV: "development"
   _APP_DB_HOST: "appwrite-mariadb"
@@ -472,6 +540,7 @@ data:
   _APP_DB_PASS: "appwrite"
   _APP_REDIS_HOST: "appwrite-redis"
   _APP_REDIS_PORT: "6379"
+  # TODO NO ES SEGURO _APP_CONSOLE_PORT: "9501"
 
 # ONECLICK INSTALLATION
 #   oc apply -f deployment.yml
