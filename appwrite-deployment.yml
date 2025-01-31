@@ -346,11 +346,15 @@ metadata:
   name: appwrite-admin
   namespace: appwrite
 spec:
+  host: appwrite-admin.apps.ancestral.com  # Reemplaza con tu dominio de OpenShift
   port:
     targetPort: admin
   to:
     kind: Service
     name: appwrite-admin-service
+  tls:
+    termination: edge  # Usar TLS edge termination
+    insecureEdgeTerminationPolicy: Redirect  # Redirigir tráfico HTTP a HTTPS
 
 ---
 # Workers
@@ -468,57 +472,32 @@ spec:
     app: appwrite-openruntimes
 
 ---
-# Configuración de Rutas
 apiVersion: route.openshift.io/v1
 kind: Route
 metadata:
-  name: appwrite-http
+  name: appwrite-api
   namespace: appwrite
 spec:
+  host: appwrite-api.apps.ancestral.com  # Dominio único para la API
   port:
-    targetPort: http
-  to:
-    kind: Service
-    name: appwrite-service
-
----
-apiVersion: route.openshift.io/v1
-kind: Route
-metadata:
-  name: appwrite-https
-  namespace: appwrite
-spec:
-  port:
-    targetPort: https
+    targetPort: https  # Usa el puerto HTTPS del Service
   to:
     kind: Service
     name: appwrite-service
   tls:
     termination: edge
-    insecureEdgeTerminationPolicy: Redirect
+    insecureEdgeTerminationPolicy: Redirect  # Redirige HTTP a HTTPS
 
 ---
 apiVersion: route.openshift.io/v1
 kind: Route
 metadata:
-  name: openruntimes-http
+  name: openruntimes
   namespace: appwrite
 spec:
+  host: openruntimes.apps.ancestral.com
   port:
-    targetPort: runtime-http
-  to:
-    kind: Service
-    name: openruntimes-service
-
----
-apiVersion: route.openshift.io/v1
-kind: Route
-metadata:
-  name: openruntimes-https
-  namespace: appwrite
-spec:
-  port:
-    targetPort: runtime-https
+    targetPort: runtime-https  # Puerto 3001 (HTTPS)
   to:
     kind: Service
     name: openruntimes-service
@@ -540,6 +519,9 @@ data:
   _APP_DB_PASS: "appwrite"
   _APP_REDIS_HOST: "appwrite-redis"
   _APP_REDIS_PORT: "6379"
+  _APP_DOMAIN: "appwrite-api.apps.ancestral.com"  # Dominio de la API
+  _APP_CONSOLE_DOMAIN: "appwrite-admin.apps.ancestral.com"  # Dominio de la consola
+  _APP_CONSOLE_WHITELIST: "appwrite-admin.apps.ancestral.com,localhost"  # Whitelist para CORS
   # TODO NO ES SEGURO _APP_CONSOLE_PORT: "9501"
 
 # ONECLICK INSTALLATION
